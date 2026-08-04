@@ -12,6 +12,7 @@ vim.g.qllm_api_provider = vim.g.qllm_api_provider or "openai"
 vim.g.qllm_provider_defaults = vim.tbl_extend("force", {
     openai = {
         model = "gpt-5.4-nano",
+        output_tokens = 8192,
         reasoning = { effort = "medium" },
     },
     ollama = {

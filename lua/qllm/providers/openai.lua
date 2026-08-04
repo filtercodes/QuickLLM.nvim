@@ -61,9 +61,9 @@ function OpenAIProvider.make_request(command, cmd_opts, command_args, text_selec
                 effort = "medium",
                 summary = "auto" -- Opt-in to visible reasoning summaries
             }
-            -- Reasoning often requires an explicit token limit
+            -- Reasoning often requires an explicit token limit (increased to 8192 to prevent mid-code truncation)
             if not request.max_tokens and not request.max_output_tokens then
-                request.max_output_tokens = 2048
+                request.max_output_tokens = 8192
             end
         end
     else

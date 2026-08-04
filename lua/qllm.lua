@@ -106,9 +106,25 @@ function qllmModule.run_cmd(opts)
         return
     end
 
-    -- Handle popup command as a special case
+    -- Handle popup command as a special case (session workspace popup)
     if command == "popup" then
-        local ui_elem = Ui.create_window(filetype, bufnr, nil, nil, nil, nil, true)
+        local p_buf = Ui.get_or_create_workspace_buf()
+        -- If the workspace popup is currently visible, toggle or focus it
+        if Ui.has_active_popup(p_buf) then
+            local current_win = vim.api.nvim_get_current_win()
+            local p_win = vim.fn.bufwinid(p_buf)
+            if p_win ~= -1 and current_win == p_win then
+                -- Focused in workspace popup: toggle close
+                Ui.close_active_popup(p_buf)
+                return
+            elseif p_win ~= -1 then
+                -- Open but not focused: switch focus to popup
+                vim.api.nvim_set_current_win(p_win)
+                return
+            end
+        end
+
+        local ui_elem = Ui.create_window(filetype, bufnr, nil, nil, nil, nil, true, p_buf)
         return ui_elem
     end
 
@@ -508,9 +524,7 @@ function qllmModule.run_cmd(opts)
     end
 
     -- If command needs project map context, ensure it is fresh before proceeding.
-    local needs_project_map = command == "files" or command == "scan" or command == "explain"
-        or command == "tree" or command == "deadcode"
-        or opts.args:find("%[") ~= nil -- Prompt contains file blocks
+    local needs_project_map = command == "scan" or command == "tree" or command == "deadcode"
 
     if needs_project_map then
         local ProjectContext = require("qllm.project_context")

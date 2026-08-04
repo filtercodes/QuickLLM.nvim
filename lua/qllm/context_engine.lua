@@ -412,8 +412,8 @@ function M.handle_context_command(command, args_str, current_bufnr, current_sele
             else
                 overrides.queue_user_message = "FILES: " .. command_args .. " in [" .. context_files_display .. "]"
             end
-            -- Append original text_selection (if any remains) to the file context
-            text_selection = system_context .. context_text .. ((text_selection ~= "") and ("\n[USER SELECTION]\n" .. text_selection) or "")
+            -- Append original text_selection (if any remains) to the file context (omitting system_context / qLLM.md)
+            text_selection = context_text .. ((text_selection ~= "") and ("\n[USER SELECTION]\n" .. text_selection) or "")
         elseif command == "scan" then
             -- 1. Determine the search query (prioritize <query> brackets)
             local search_query = query or remaining_prompt

@@ -3,10 +3,11 @@ local Split = require("nui.split")
 
 local Window = {}
 
-function Window.create_horizontal()
+function Window.create_horizontal(existing_bufnr)
     local size = vim.g.qllm_horizontal_popup_size or "40%"
 
     local split_obj = Split({
+        bufnr = existing_bufnr,
         relative = "editor",
         position = "bottom",
         size = size,
@@ -24,10 +25,11 @@ function Window.create_horizontal()
     return split_obj, height, 0, vim.o.columns, 0
 end
 
-function Window.create_vertical()
+function Window.create_vertical(existing_bufnr)
     local size = vim.g.qllm_vertical_popup_size or "50%"
 
     local split_obj = Split({
+        bufnr = existing_bufnr,
         relative = "editor",
         position = "right",
         size = size,
@@ -43,7 +45,7 @@ function Window.create_vertical()
     return split_obj, vim.o.lines, 0, width, 0
 end
 
-function Window.create_popup(is_full_height)
+function Window.create_popup(is_full_height, existing_bufnr)
     -- 1. Resolve window options (wrap, etc.)
     is_full_height = is_full_height or false -- Default to false
     local window_options = vim.deepcopy(vim.g.qllm_popup_window_options or {})
@@ -114,6 +116,7 @@ function Window.create_popup(is_full_height)
 
     -- 4. Return the element and its max constraints
     local ui_elem = Popup({
+        bufnr = existing_bufnr,
         enter = true,
         focusable = true,
         border = { style = vim.g.qllm_popup_style or "rounded" },

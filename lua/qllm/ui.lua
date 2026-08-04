@@ -10,6 +10,26 @@ local ui_to_owner_map = {}
 -- Track which popups are currently active
 local active_popups = {}
 
+-- Session-persistent popup workspace buffer handle
+local persistent_workspace_buf = nil
+
+---Returns or creates the session persistent workspace buffer.
+function Ui.get_or_create_workspace_buf()
+    if persistent_workspace_buf and vim.api.nvim_buf_is_valid(persistent_workspace_buf) then
+        return persistent_workspace_buf
+    end
+
+    local bufnr = vim.api.nvim_create_buf(false, true)
+    vim.bo[bufnr].bufhidden = "hide"
+    vim.bo[bufnr].buftype = "nofile"
+    local popup_filetype = vim.g.qllm_text_popup_filetype or "markdown"
+    vim.bo[bufnr].filetype = popup_filetype
+    vim.bo[bufnr].modifiable = true
+
+    persistent_workspace_buf = bufnr
+    return bufnr
+end
+
 -- Setup global autocommands to keep popups in sync with buffer/window state.
 local sync_group = vim.api.nvim_create_augroup("qllm_ui_sync", { clear = true })
 vim.api.nvim_create_autocmd("BufEnter", {
@@ -69,14 +89,15 @@ function Ui.save_cursor_pos_for_buf(ui_bufnr)
 
     if not vim.api.nvim_buf_is_valid(ui_bufnr) then return end
 
-    local recall_index = vim.b[ui_bufnr].qllm_recall_index
-    if not recall_index or vim.b[ui_bufnr].qllm_show_question then return end
-
     local winid = vim.fn.bufwinid(ui_bufnr)
     if winid ~= -1 then
         local cursor = vim.api.nvim_win_get_cursor(winid)
-        local Queue = require("qllm.queue")
-        Queue.save_cursor_pos(info.owner, recall_index, cursor)
+        vim.b[ui_bufnr].qllm_last_cursor = cursor
+        local recall_index = vim.b[ui_bufnr].qllm_recall_index
+        if recall_index and not vim.b[ui_bufnr].qllm_show_question then
+            local Queue = require("qllm.queue")
+            Queue.save_cursor_pos(info.owner, recall_index, cursor)
+        end
     end
 end
 
@@ -168,7 +189,7 @@ function Ui.sync_window_size(ui_bufnr)
     return visual_height, max_h
 end
 
-function Ui.create_window(filetype, bufnr, start_row, start_col, end_row, end_col, is_full_height)
+function Ui.create_window(filetype, bufnr, start_row, start_col, end_row, end_col, is_full_height, reuse_bufnr)
     -- Close any existing popup for this owner before opening a new one
     Ui.close_active_popup(bufnr)
 
@@ -180,17 +201,20 @@ function Ui.create_window(filetype, bufnr, start_row, start_col, end_row, end_co
     local ui_elem, max_h, max_row, max_w, col
 
     if popup_type == "horizontal" then
-        ui_elem, max_h, max_row, max_w, col = Window.create_horizontal()
+        ui_elem, max_h, max_row, max_w, col = Window.create_horizontal(reuse_bufnr)
     elseif popup_type == "vertical" then
-        ui_elem, max_h, max_row, max_w, col = Window.create_vertical()
+        ui_elem, max_h, max_row, max_w, col = Window.create_vertical(reuse_bufnr)
     else
-        ui_elem, max_h, max_row, max_w, col = Window.create_popup(is_full_height)
+        ui_elem, max_h, max_row, max_w, col = Window.create_popup(is_full_height, reuse_bufnr)
     end
     
     -- mount/open the component
     ui_elem:mount()
 
     local ui_bufnr = ui_elem.bufnr
+
+    -- Ensure buffer is hidden rather than deleted when window closes
+    vim.bo[ui_bufnr].bufhidden = "hide"
 
     -- Metadata inheritance
     if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
@@ -217,6 +241,15 @@ function Ui.create_window(filetype, bufnr, start_row, start_col, end_row, end_co
 
     if popup_type == "popup" then
         Ui.sync_window_size(ui_bufnr)
+    end
+
+    -- Restore saved cursor position if available
+    local saved_cursor = vim.b[ui_bufnr].qllm_last_cursor
+    if saved_cursor then
+        local winid = vim.fn.bufwinid(ui_bufnr)
+        if winid ~= -1 then
+            pcall(vim.api.nvim_win_set_cursor, winid, saved_cursor)
+        end
     end
 
     -- Event: Handle BufLeave - buffer cleanup and unmounting
