@@ -13,9 +13,22 @@ local function create_command(name)
 end
 
 create_command("Que")
-create_command("Pre1")
-create_command("Pre2")
-create_command("Pre3")
+
+-- Dynamically create preset user commands (Pre1 through Pre9) based on user configuration
+local function is_preset_defined(i)
+    if i == 1 then return true end -- Pre1 always available as baseline
+    return vim.g["qllm_api_provider" .. i] ~= nil
+        or vim.g["qllm_search_provider" .. i] ~= nil
+        or vim.g["qllm_commands_defaults" .. i] ~= nil
+        or vim.g["qllm_provider_defaults" .. i] ~= nil
+        or vim.g["qllm_search_model" .. i] ~= nil
+end
+
+for i = 1, 9 do
+    if is_preset_defined(i) then
+        create_command("Pre" .. i)
+    end
+end
 create_command("Gemini")
 create_command("Claude")
 create_command("Openai")

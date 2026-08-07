@@ -41,13 +41,24 @@ vim.g.qllm_search_model_defaults = vim.tbl_extend("force", {
     local_grounding = { model = "qwen3:8b" },
 }, vim.g.qllm_search_model_defaults or {})
 
--- Presets
-for i = 1, 3 do
-    local search_key = "qllm_search_provider" .. i
-    local defaults_key = "qllm_commands_defaults" .. i
+-- Presets: Dynamically detect defined presets (up to Pre9)
+local function is_preset_defined(i)
+    if i == 1 then return true end -- Pre1 is always available as default fallback
+    return vim.g["qllm_api_provider" .. i] ~= nil
+        or vim.g["qllm_search_provider" .. i] ~= nil
+        or vim.g["qllm_commands_defaults" .. i] ~= nil
+        or vim.g["qllm_provider_defaults" .. i] ~= nil
+        or vim.g["qllm_search_model" .. i] ~= nil
+end
 
-    vim.g[search_key] = vim.g[search_key] or "gemini"
-    vim.g[defaults_key] = vim.g[defaults_key] or nil
+for i = 1, 9 do
+    if is_preset_defined(i) then
+        local search_key = "qllm_search_provider" .. i
+        local defaults_key = "qllm_commands_defaults" .. i
+
+        vim.g[search_key] = vim.g[search_key] or "gemini"
+        vim.g[defaults_key] = vim.g[defaults_key] or nil
+    end
 end
 
 -- Clears visual selection after completion

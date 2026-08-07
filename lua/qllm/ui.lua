@@ -464,11 +464,10 @@ function Ui.popup(lines, filetype, bufnr, start_row, start_col, end_row, end_col
     vim.api.nvim_buf_set_lines(ui_elem.bufnr, 0, -1, false, lines)
     Ui.sync_window_size(ui_elem.bufnr)
 
-    if cursor_pos then
-        local winid = vim.fn.bufwinid(ui_elem.bufnr)
-        if winid ~= -1 then
-            pcall(vim.api.nvim_win_set_cursor, winid, cursor_pos)
-        end
+    local target_cursor = cursor_pos or { 1, 0 }
+    local winid = vim.fn.bufwinid(ui_elem.bufnr)
+    if winid ~= -1 then
+        pcall(vim.api.nvim_win_set_cursor, winid, target_cursor)
     end
 end
 

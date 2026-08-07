@@ -74,7 +74,7 @@ In addition to `:Que` (which uses globally configured default provider), you can
 
 Using these commands works exactly like `:Que`, but routes the request to the specified API with its default model.
 
-There are also configurable presets: `:Pre1`, `:Pre2`, and `:Pre3`. To switch between even more different models or providers in the same context window (e.g., setting `:Pre2` to use Anthropic's Claude 4.6 Sonnet while `:Que` default runs a local Ollama instance). See [Overriding command configurations](#overriding-command-configurations) section below for details.
+There are also configurable presets: `:Pre1`, `:Pre2`, `:Pre3`...up to `:Pre9`. To switch between more different models when needed (e.g., setting `:Pre2` to use Anthropic's Claude 4.6 Sonnet while `:Que` default runs a local Ollama instance). See [Overriding command configurations](#overriding-command-configurations) section below for details. Presets are dynamically created only if the seettings are found for it.
 
 Commands are logically categorized into **Action** (direct text generation or editing) and **Analysis** (context and knowledge gathering). This distinction allows for orchestrating a development workflow by first building a context through analysis before executing targeted actions.
 

@@ -455,7 +455,7 @@ function qllmModule.run_cmd(opts)
     }
 
     -- Detect Presets
-    local preset_idx = opts.name:match("Pre(%d)$")
+    local preset_idx = opts.name:match("Pre(%d+)$")
     if preset_idx then
         overrides = { preset = tonumber(preset_idx) }
     elseif provider_map[opts.name] then
