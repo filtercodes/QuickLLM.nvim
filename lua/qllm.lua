@@ -128,6 +128,202 @@ function qllmModule.run_cmd(opts)
         return ui_elem
     end
 
+local function render_aligned_table(headers, rows)
+    local col_widths = {}
+    for i, h in ipairs(headers) do
+        col_widths[i] = #h
+    end
+    for _, row in ipairs(rows) do
+        for i = 1, #headers do
+            local val = tostring(row[i] or "")
+            col_widths[i] = math.max(col_widths[i] or 0, #val)
+        end
+    end
+
+    local out = {}
+    -- Header row
+    local header_parts = {}
+    for i, h in ipairs(headers) do
+        table.insert(header_parts, string.format("%-" .. col_widths[i] .. "s", h))
+    end
+    table.insert(out, "  " .. table.concat(header_parts, " │ "))
+
+    -- Separator row
+    local sep_parts = {}
+    for i, w in ipairs(col_widths) do
+        table.insert(sep_parts, string.rep("─", w))
+    end
+    table.insert(out, "  " .. table.concat(sep_parts, "─┼─"))
+
+    -- Data rows
+    for _, row in ipairs(rows) do
+        local row_parts = {}
+        for i = 1, #headers do
+            local val = tostring(row[i] or "")
+            table.insert(row_parts, string.format("%-" .. col_widths[i] .. "s", val))
+        end
+        table.insert(out, "  " .. table.concat(row_parts, " │ "))
+    end
+
+    return out
+end
+
+local function get_models_overview_lines()
+    local lines = {
+        "# 🤖 qLLM Model & Provider Configuration",
+        "",
+        "## Active Defaults",
+        "",
+    }
+
+    local active_provider = vim.g.qllm_api_provider or "openai"
+    local active_search_provider = vim.g.qllm_search_provider or "gemini"
+    
+    local global_cmd_defaults = vim.g.qllm_commands_defaults or {}
+    local global_model = global_cmd_defaults.model
+    if not global_model then
+        local p_defs = (vim.g.qllm_provider_defaults or {})[active_provider] or {}
+        global_model = p_defs.model or "(provider default)"
+    end
+
+    local global_search_model = vim.g.qllm_search_model or global_cmd_defaults.search_model
+    if not global_search_model then
+        local s_defs = (vim.g.qllm_search_model_defaults or {})[active_search_provider] or {}
+        global_search_model = s_defs.model or "(search provider default)"
+    end
+
+    table.insert(lines, string.format("- **Active Chat Provider**: %s", active_provider))
+    table.insert(lines, string.format("- **Resolved Chat Model**: %s", global_model))
+    table.insert(lines, string.format("- **Active Search Provider**: %s", active_search_provider))
+    table.insert(lines, string.format("- **Resolved Search Model**: %s", global_search_model))
+    table.insert(lines, string.format("- **Queue Heaviness**: %s", vim.g.qllm_queue_heaviness or "low"))
+    table.insert(lines, "")
+
+    -- 1. Presets Table (Pre1 - Pre9)
+    table.insert(lines, "## Presets (Pre1 – Pre9)")
+    table.insert(lines, "")
+
+    local preset_headers = { "Preset", "Command", "Provider", "Model", "Search Provider", "Search Model" }
+    local preset_rows = {}
+
+    for i = 1, 9 do
+        local p_provider = vim.g["qllm_api_provider" .. i] or (i == 1 and active_provider or nil)
+        local p_search_prov = vim.g["qllm_search_provider" .. i] or (i == 1 and active_search_provider or nil)
+        local p_cmd_defs = vim.g["qllm_commands_defaults" .. i]
+        local p_prov_defs = vim.g["qllm_provider_defaults" .. i]
+        local p_search_m = vim.g["qllm_search_model" .. i]
+
+        local is_defined = (i == 1) or p_provider ~= nil or p_search_prov ~= nil or p_cmd_defs ~= nil or p_prov_defs ~= nil or p_search_m ~= nil
+        if is_defined then
+            local prov = p_provider or active_provider or "openai"
+            local mod = (p_cmd_defs and p_cmd_defs.model) or ((p_prov_defs and p_prov_defs[prov] and p_prov_defs[prov].model)) or ((vim.g.qllm_provider_defaults or {})[prov] and (vim.g.qllm_provider_defaults or {})[prov].model) or "-"
+            local sprov = p_search_prov or vim.g.qllm_search_provider or "gemini"
+            local smod = p_search_m or (p_cmd_defs and p_cmd_defs.search_model) or ((vim.g.qllm_search_model_defaults or {})[sprov] and (vim.g.qllm_search_model_defaults or {})[sprov].model) or "-"
+
+            table.insert(preset_rows, { string.format("Pre%d", i), string.format(":Pre%d", i), prov, mod, sprov, smod })
+        end
+    end
+
+    if #preset_rows > 0 then
+        for _, l in ipairs(render_aligned_table(preset_headers, preset_rows)) do
+            table.insert(lines, l)
+        end
+    end
+    table.insert(lines, "")
+
+    -- 2. Provider Defaults Table
+    table.insert(lines, "## Provider Defaults")
+    table.insert(lines, "")
+
+    local p_headers = { "Provider", "Default Chat Model", "Default Search Model", "Parameters / Options" }
+    local p_rows = {}
+
+    local known_providers = { "openai", "anthropic", "gemini", "ollama", "groq", "local_grounding" }
+    local seen_p = {}
+    for _, p in ipairs(known_providers) do seen_p[p] = true end
+    for p, _ in pairs(vim.g.qllm_provider_defaults or {}) do
+        if not seen_p[p] then
+            table.insert(known_providers, p)
+            seen_p[p] = true
+        end
+    end
+
+    for _, p in ipairs(known_providers) do
+        local p_cfg = (vim.g.qllm_provider_defaults or {})[p] or {}
+        local chat_m = p_cfg.model or "-"
+        local s_cfg = (vim.g.qllm_search_model_defaults or {})[p] or {}
+        local search_m = s_cfg.model or "-"
+
+        local extra = {}
+        if p_cfg.output_tokens then table.insert(extra, "tokens=" .. tostring(p_cfg.output_tokens)) end
+        if p_cfg.reasoning and p_cfg.reasoning.effort then table.insert(extra, "reasoning=" .. tostring(p_cfg.reasoning.effort)) end
+        if p_cfg.temperature then table.insert(extra, "temp=" .. tostring(p_cfg.temperature)) end
+        local extra_str = #extra > 0 and table.concat(extra, ", ") or "-"
+
+        local prov_label = (p == active_provider) and (p .. " (active)") or p
+        table.insert(p_rows, { prov_label, chat_m, search_m, extra_str })
+    end
+
+    for _, l in ipairs(render_aligned_table(p_headers, p_rows)) do
+        table.insert(lines, l)
+    end
+    table.insert(lines, "")
+
+    -- 3. Command-Specific Overrides Table
+    local cmd_overrides = {}
+    local all_cmds = vim.tbl_extend("force", vim.g.qllm_commands_defaults or {}, vim.g.qllm_commands or {})
+    for c_name, c_opts in pairs(all_cmds) do
+        if type(c_opts) == "table" and (c_opts.model or c_opts.provider or c_opts.search_model or c_opts.thinking ~= nil) then
+            table.insert(cmd_overrides, {
+                name = ":" .. c_name,
+                provider = c_opts.provider or "-",
+                model = c_opts.model or "-",
+                search_model = c_opts.search_model or "-",
+                thinking = c_opts.thinking ~= nil and tostring(c_opts.thinking) or "-",
+            })
+        end
+    end
+
+    if #cmd_overrides > 0 then
+        table.insert(lines, "## Command Overrides")
+        table.insert(lines, "")
+        local cmd_headers = { "Command", "Provider", "Model", "Search Model", "Thinking" }
+        local cmd_rows = {}
+        table.sort(cmd_overrides, function(a, b) return a.name < b.name end)
+        for _, co in ipairs(cmd_overrides) do
+            table.insert(cmd_rows, { co.name, co.provider, co.model, co.search_model, co.thinking })
+        end
+        for _, l in ipairs(render_aligned_table(cmd_headers, cmd_rows)) do
+            table.insert(lines, l)
+        end
+        table.insert(lines, "")
+    end
+
+    -- 4. Knowledge Base & Grounding Configuration
+    local kb = vim.g.qllm_kb_opts or {}
+    table.insert(lines, "## Knowledge Base & Context Orchestration")
+    table.insert(lines, "")
+    local kb_headers = { "Role", "Provider", "Model", "Details" }
+    local kb_rows = {
+        { "Embeddings", kb.provider or "ollama", kb.model or "nomic-embed-text", "dim=" .. tostring(kb.dimension or 768) },
+        { "Context Gen", kb.context_provider or "(default)", kb.context_model or "(default)", "scan_context=" .. tostring(kb.scan_context or 3) },
+    }
+    for _, l in ipairs(render_aligned_table(kb_headers, kb_rows)) do
+        table.insert(lines, l)
+    end
+    table.insert(lines, "")
+
+    return lines
+end
+
+    -- listmodels: display all configured models, providers, presets in a markdown popup
+    if command == "listmodels" and #opts.fargs == 1 then
+        local lines = get_models_overview_lines()
+        local start_row, start_col, end_row, end_col = Utils.get_visual_selection()
+        Ui.popup(lines, "markdown", bufnr, start_row, start_col, end_row, end_col)
+        return
+    end
+
     -- list: show all buffers that have chat queue
     if command == "list" and #opts.fargs == 1 then
         local entries = Queue.list_queue_buffers()

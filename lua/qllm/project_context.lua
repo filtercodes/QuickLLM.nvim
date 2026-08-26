@@ -6,7 +6,11 @@ local Api = require("qllm.api")
 function M.get_project_root()
     local git_dir = vim.fn.finddir(".git", ".;")
     if git_dir ~= "" then
-        return vim.fn.fnamemodify(git_dir, ":h:p") .. "/"
+        -- Resolve to an absolute path before taking the parent. Applying ":h" first
+        -- yields "." when the search starts in the project root itself, which then
+        -- survives ":p" and leaves every file:// link and stored path relative.
+        local absolute = vim.fn.fnamemodify(git_dir, ":p"):gsub("/$", "")
+        return vim.fn.fnamemodify(absolute, ":h") .. "/"
     end
     return vim.fn.getcwd() .. "/"
 end
@@ -112,7 +116,8 @@ IMPORTANT: Output your response in Markdown format.
         local cleaned_response = response:gsub("<!%-%- METADATA: .- %-%->\n*", "")
 
         -- Programmatically prepend the actual metadata block
-        local metadata_comment = string.format('<!-- METADATA: {"hash": "%s", "count": %d} -->\n', hash, count)
+        local metadata_comment = string.format('<!-- METADATA: {"hash": "%s", "count": %d, "schema": %d} -->\n',
+            hash, count, CodeExtraction.MAP_SCHEMA)
         local final_content = metadata_comment .. cleaned_response
         
         local output_path = root .. "qLLM.md"
@@ -153,6 +158,12 @@ function M.get_freshness_status()
 
     local root = M.get_project_root()
     local current_hash, current_count = M.generate_project_skeleton(root)
+
+    -- A map built by an older version indexes fewer kinds of definition. Report it as
+    -- stale so the local graph is rebuilt; that path costs no LLM call.
+    if (decoded.schema or 1) < CodeExtraction.MAP_SCHEMA then
+        return "stale"
+    end
 
     if current_hash == decoded.hash then
         return "fresh"
@@ -200,7 +211,8 @@ function M.ensure_fresh_context(callback)
             local current_hash, current_count = M.generate_project_skeleton(root)
             local context = M.get_active_context()
             if context then
-                local new_metadata = string.format('<!-- METADATA: {"hash": "%s", "count": %d} -->', current_hash, current_count)
+                local new_metadata = string.format('<!-- METADATA: {"hash": "%s", "count": %d, "schema": %d} -->',
+                    current_hash, current_count, CodeExtraction.MAP_SCHEMA)
                 local updated_context = context:gsub("<!%-%- METADATA: .- %-%->", new_metadata)
                 local output_path = root .. "qLLM.md"
                 local f = io.open(output_path, "w")

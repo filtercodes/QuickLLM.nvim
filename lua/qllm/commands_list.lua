@@ -205,7 +205,7 @@ function CommandsList.complete(ArgLead, CmdLine, CursorPos)
 
     -- If we are still typing the first argument (sub-command)
     if #parts == 1 or (#parts == 2 and not ends_with_space) then
-        local cmd = { "heavy", "copy", "list", "undo", "wiki_index", "wiki_lint", "wiki_save", "init", "tree", "deadcode", "recall", "recallq", "clear", "help", "load", "export", "json" }
+        local cmd = { "heavy", "copy", "list", "listmodels", "undo", "wiki_index", "wiki_lint", "wiki_save", "init", "tree", "deadcode", "recall", "recallq", "clear", "help", "load", "export", "json" }
         for k, v in pairs(vim.g.qllm_commands_defaults or {}) do
             if type(v) == "table" then
                 table.insert(cmd, k)

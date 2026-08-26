@@ -24,11 +24,13 @@ local function is_preset_defined(i)
         or vim.g["qllm_search_model" .. i] ~= nil
 end
 
-for i = 1, 9 do
-    if is_preset_defined(i) then
-        create_command("Pre" .. i)
+vim.schedule(function()
+    for i = 1, 9 do
+        if is_preset_defined(i) then
+            create_command("Pre" .. i)
+        end
     end
-end
+end)
 create_command("Gemini")
 create_command("Claude")
 create_command("Openai")

@@ -105,7 +105,7 @@ Commands are logically categorized into **Action** (direct text generation or ed
 | init  |  none | Analyzes the local folder and subfolders to create an architectural map (`qLLM.md`) for the context orchestration. |
 | explain  |  text selection | Asks LLM to explain the selected text or code and returns the explanation in a text popup.|
 | files  |  [file paths] and prompt | Reads files content (supports wildcards) and passes it as context for the prompt. |
-| scan  |  query -- prompt | Performs a fast literal search or hybrid semantic search (if initialized) across local project files and sends relevant chunks to the LLM. Divide query and prompt with space-double-dash-space. |
+| scan  |  query -- prompt | Searches the project call graph for definitions matching the query, ranked by structural centrality, then supplements them with text matches. Divide query and prompt with space-double-dash-space. Prefix `-s` for structural only, `-t` for text only. |
 | tree  |  symbol name | Queries the project call graph or reference map for the symbol, displaying its callers (upward) and callees (downward) in a text popup. |
 | deadcode | none | Analyzes the project call graph to find disconnected/unused functions, unfinished stubs (with TODO/FIXME tags), and unused local variables. |
 
@@ -138,6 +138,7 @@ Commands are logically categorized into **Action** (direct text generation or ed
 |--------------|---- |------------------------------------|
 | popup  |  none | Opens an empty popup window - to use for crafting multiline prompt, copy pasting text, etc. |
 | json   |  filepath, none, or filepath + path | Opens JSON explorer in a popup. Supports keypath drilling, back navigation, and automatic index pagination. |
+| listmodels |  none | Displays all configured models, providers, presets, and search defaults in a popup. |
 | help  |  none | Displays the help guide. |
 
 ## Overriding command configurations
@@ -240,8 +241,11 @@ If you have manually initialized the project with `:Que init`, qLLM creates an a
 *   `:Que init`: Analyzes current project directory and creates a `qLLM.md` map.
 *   `:Que files [file1.py file2.js *.md] prompt`: Reads local files (supports wildcards and escaped quotes) and passes their content as the context for the prompt.
     *   Note: If no prompt is provided, it defaults to the `explain` command for all files.
-*   `:Que scan [src/*.lua] query -- prompt`: Performs a fast literal search across local project files for the `"query"`, automatically expands matches to their containing code blocks using Tree-sitter, and sends the relevant chunks to the LLM for analysis.
-    *   Note: If no prompt is provided, it displays the search results in a popup without calling the LLM. The result goes to the chat queue so the next LLM inference can see it.
+*   `:Que scan [src/*.lua] query -- prompt`: Structural, centrality-ranked code search. It looks the `"query"` up in the project graph (`qLLM_map.json`) and returns the actual definitions that carry the name — functions, types and module-level variables — ranked by how central each is to the call graph, then appends plain text matches for anything a graph cannot hold (comments, config, markup).
+    *   Ranking combines the quality of the name match with structural centrality: how many distinct files call a definition, how often, and how important its callers are in turn. A function called from twenty files outranks a same-named local helper, and definitions in test, mock or fixture paths are pushed down, so core API methods surface ahead of test doubles.
+    *   Modes: `-s` searches only the graph, `-t` only the text (the pre-graph behaviour), `-a` forces both. Without a flag the `scan_mode` setting applies, which defaults to `hybrid`. If the project has never been initialized with `:Que init`, scan falls back to text search on its own.
+    *   If the query names nothing in the graph, scan reports the definitions that *reference* it instead, ranked the same way — which is how symbols the indexer does not record as definitions still resolve.
+    *   Note: If no prompt is provided, it displays the ranked results in a popup without calling the LLM. The result goes to the chat queue so the next LLM inference can see it. With a prompt, the LLM receives whole definition bodies with their callers and callees, rather than matching lines.
 *   `:Que tree <function_or_variable>`: Queries the call graph or reference map for the specified function or variable. It parses the indexed map and walks symbol connections to trace upward callers and downward callees recursively.
 *   `:Que deadcode`: Runs static analysis on the mapped codebase to identify unused/disconnected functions, unfinished stubs (including empty functions and those containing `TODO`/`FIXME` tags), and unused local variables. Selecting any detected item opens the file at the exact coordinate.
     *   Note: Exported public APIs, entry points, or dynamically registered callback functions may be reported as disconnected (having 0 callers) because they are invoked externally or dynamically.
@@ -297,7 +301,19 @@ vim.g.qllm_kb_opts = {
     auto_check_freshness = true, -- Check for structural changes on every scan/files command
 
     -- ORCHESTRATION (The Librarian)
-    scan_context = 3,            -- Lines of context around scan matches
+    scan_context = 3,            -- Lines of context around scan text matches
+    scan_index_variables = true, -- Index module-level variables in the project map
+    scan_use_ctags = true,       -- Use Universal Ctags (if installed) to cover languages
+                                 -- with no Tree-sitter parser available
+
+    -- Structural scan
+    scan_mode = "hybrid",        -- "hybrid" | "structural" | "text"
+    scan_max_results = 20,       -- Ranked definitions shown in the popup
+    scan_max_defs = 5,           -- Definition bodies sent to the LLM
+    scan_centrality_weight = 1.0, -- How strongly centrality boosts a name match
+    scan_test_penalty = 0.5,     -- Score multiplier for test/mock/fixture paths
+    scan_test_patterns = nil,    -- Override the default test path segments
+    scan_text_budget = 4000,     -- Char cap on text matches supplementing structural ones
     sync_strategy = "auto",      -- "auto" (cross-linking) | "manual"
     neighborhood_size = 5,       -- Number of related files to weave
 }

@@ -10,7 +10,7 @@ local command_descriptions = {
     edit = "Modifies the selected code based on your instructions. Use this to refactor, change logic, or apply specific transformations to existing code.",
     explain = "Provides a detailed explanation of the selected code. It breaks down the logic and explains it in simple terms, useful for understanding complex legacy code.",
     files = "Reads multiple local project files (supports wildcards) and passes their content as context to the prompt.",
-    scan = "Performs a hybrid search (fuzzy/literal) across local project files and sends relevant chunks to the LLM.",
+    scan = "Searches the project call graph for definitions matching the query, ranked by structural centrality, then adds text matches. Prefix `-s` for structural only, `-t` for text only.",
     init = "Analyzes the current project directory and creates a `qLLM.md` map to enable project-specific context orchestration.",
     tree = "Queries the call graph or reference map for the specified function or variable (e.g. `:Que tree my_func`), recursively walking symbol connections.",
     deadcode = "Runs static analysis on the mapped codebase to identify unused functions, stubs, and local variables.",
@@ -33,6 +33,7 @@ local command_descriptions = {
     export = "Exports the current buffer's active conversation queue to a JSON file. Usage: `:Que export [filepath]`.",
     load = "Loads a text file as context or restores/merges a previously exported JSON session. Usage: `:Que load [filepath]`.",
     json = "Launches the interactive JSON explorer. Inside the popup, use `f` and `d` to cycle indexes.",
+    listmodels = "Displays all configured models, providers, presets, and search defaults in a markdown popup.",
 }
 
 function M.get_help_lines()
@@ -61,7 +62,7 @@ function M.get_help_lines()
         "wiki", "wiki_index", "wiki_save", "wiki_lint",
         "doc", "tests", "opt", "debug",
         "recall", "recallq", "undo", "clear", "help",
-        "heavy", "hcopy", "hlist", "export", "load", "json"
+        "heavy", "hcopy", "hlist", "listmodels", "export", "load", "json"
     }
 
     local all_commands = {}

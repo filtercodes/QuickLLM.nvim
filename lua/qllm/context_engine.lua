@@ -67,10 +67,12 @@ end
 ---@return table extracted List of strings from file delimiters.
 ---@return string? query Content from query ' -- ' separator (only for scan).
 ---@return string remaining Everything else.
+---@return string? mode Scan mode from a leading flag: "structural" | "text" | "hybrid".
 function M.parse_input(input, command)
     local extracted = {}
     local remaining = input
     local query = nil
+    local mode = nil
 
     -- 1. Extract File Blocks [...]
     local function extract_next_file(str)
@@ -121,6 +123,14 @@ function M.parse_input(input, command)
 
     -- 2. Extract Query via ' -- ' separator (Only for scan command)
     if command == "scan" then
+        -- Leading mode flag selects how this one search runs, overriding scan_mode.
+        -- Safe against the ' -- ' separator, which requires spaces on both sides.
+        local flag, rest = remaining:match("^(%-[sta])%s+(.*)$")
+        if flag then
+            mode = ({ ["-s"] = "structural", ["-t"] = "text", ["-a"] = "hybrid" })[flag]
+            remaining = vim.trim(rest)
+        end
+
         -- Find the first occurrence of " -- " (space-double-dash-space)
         local sep_start, sep_end = remaining:find(" %-%- ")
         if sep_start then
@@ -133,7 +143,7 @@ function M.parse_input(input, command)
         end
     end
 
-    return extracted, query, remaining
+    return extracted, query, remaining, mode
 end
 
 ---Finds files containing the query using rg, git grep, or grep from the project root.
@@ -213,20 +223,34 @@ end
 ---@param files table List of resolved file paths.
 ---@param query string The search query.
 ---@param context_lines number? Number of lines around the match to include.
+---@param exclude_ranges table? Absolute path -> list of {start, stop} line ranges to skip,
+---       used to keep text results from repeating definitions already reported
+---       structurally.
 ---@return string The formatted search results.
-function M.scan_search(files, query, context_lines)
+function M.scan_search(files, query, context_lines, exclude_ranges)
     local results = ""
     -- Use global variable for context or default to 3
     local kb_opts = vim.g.qllm_kb_opts
     local ctx = context_lines or (kb_opts and kb_opts.scan_context) or 3
-    
+
+    local function is_excluded(path, line_num)
+        local ranges = exclude_ranges and exclude_ranges[path]
+        if not ranges then return false end
+        for _, range in ipairs(ranges) do
+            if line_num >= range[1] and line_num <= range[2] then
+                return true
+            end
+        end
+        return false
+    end
+
     for _, path in ipairs(files) do
         local lines = vim.fn.readfile(path)
         local matches = {}
 
         for i, line in ipairs(lines) do
             -- Case-insensitive find
-            if line:lower():find(query:lower(), 1, true) then
+            if line:lower():find(query:lower(), 1, true) and not is_excluded(path, i) then
                 table.insert(matches, i)
             end
         end
@@ -272,6 +296,139 @@ function M.scan_search(files, query, context_lines)
     return results
 end
 
+---Runs the scan pipeline: a structural search over the project map, a text search, or
+---both. Structural results come first because they name real definitions; text results
+---are appended for the things a map cannot hold (comments, config, markup), with
+---anything already reported structurally filtered out.
+---@param search_query string
+---@param opts table { mode, project_root, explicit_files, current_file }
+---@return table outcome { popup_lines, llm_context, files, structural_count, text_count,
+---        is_reference, mode_used, structural_error }
+function M.scan_pipeline(search_query, opts)
+    local kb_opts = vim.g.qllm_kb_opts or {}
+    local mode = opts.mode or kb_opts.scan_mode or "hybrid"
+    local project_root = opts.project_root
+
+    local outcome = {
+        popup_lines = {},
+        llm_context = "",
+        files = {},
+        structural_count = 0,
+        text_count = 0,
+        is_reference = false,
+        mode_used = mode,
+    }
+
+    -- 1. Structural pass over qLLM_map.json
+    local results, is_reference
+    if mode ~= "text" then
+        local StructuralSearch = require("qllm.structural_search")
+        local err
+        results, err, is_reference = StructuralSearch.search(search_query, project_root, {
+            files = opts.explicit_files,
+        })
+        if err then
+            outcome.structural_error = err
+            results = nil
+        end
+
+        if results and #results > 0 then
+            outcome.structural_count = #results
+            outcome.is_reference = is_reference or false
+            outcome.popup_lines = StructuralSearch.format_results(
+                results, search_query, project_root, outcome.is_reference)
+            outcome.llm_context = StructuralSearch.format_for_llm(results, project_root)
+
+            local seen_file = {}
+            for _, result in ipairs(results) do
+                local abs_path = project_root .. result.file
+                if not seen_file[abs_path] and vim.fn.filereadable(abs_path) == 1 then
+                    seen_file[abs_path] = true
+                    table.insert(outcome.files, abs_path)
+                end
+            end
+        end
+    end
+
+    -- 2. Text pass. In hybrid this supplements the structural results; when structural
+    -- found nothing (or is unavailable) it becomes the whole answer.
+    local run_text = (mode == "text")
+        or (mode == "hybrid")
+        or (mode == "structural" and outcome.structural_count == 0)
+
+    if run_text then
+        local text_files = opts.explicit_files
+        if not text_files or #text_files == 0 then
+            text_files = M.find_files_with_query(search_query, project_root)
+            if #text_files == 0 and opts.current_file and opts.current_file ~= "" then
+                text_files = { opts.current_file }
+            end
+        end
+
+        -- Skip lines already delivered as part of a structural result.
+        local exclude_ranges = {}
+        for _, result in ipairs(results or {}) do
+            local abs_path = project_root .. result.file
+            exclude_ranges[abs_path] = exclude_ranges[abs_path] or {}
+            table.insert(exclude_ranges[abs_path], { result.start_line, result.end_line })
+        end
+
+        local text_context = M.scan_search(text_files, search_query, nil, exclude_ranges)
+
+        -- When text results merely supplement structural ones, keep them to a budget.
+        -- An unbounded dump (easily >100KB on a common term) would bury the ranked
+        -- definitions it is meant to complement. A text-only search stays unbounded.
+        local truncated = false
+        if outcome.structural_count > 0 and text_context ~= "" then
+            local budget = kb_opts.scan_text_budget or 4000
+            if #text_context > budget then
+                local cut = text_context:sub(1, budget)
+                -- Trim back to the last complete line so no code block is half-shown.
+                local last_newline = cut:find("\n[^\n]*$")
+                text_context = cut:sub(1, last_newline or #cut)
+                truncated = true
+            end
+        end
+
+        if text_context ~= "" then
+            outcome.text_count = 1
+            outcome.text_truncated = truncated
+            local Utils = require("qllm.utils")
+
+            if outcome.structural_count > 0 then
+                table.insert(outcome.popup_lines, "")
+                table.insert(outcome.popup_lines, "---")
+                table.insert(outcome.popup_lines, "## Text matches elsewhere")
+                table.insert(outcome.popup_lines,
+                    "*Occurrences outside the definitions listed above.*")
+                table.insert(outcome.popup_lines, "")
+            end
+            for _, line in ipairs(Utils.parse_lines(text_context)) do
+                table.insert(outcome.popup_lines, line)
+            end
+            if truncated then
+                table.insert(outcome.popup_lines, "")
+                table.insert(outcome.popup_lines,
+                    "*Text matches truncated. Use `-t` for the full text search.*")
+            end
+
+            outcome.llm_context = outcome.llm_context ..
+                ((outcome.llm_context ~= "") and "\n[TEXT MATCHES]\n" or "") .. text_context
+
+            local seen = {}
+            for _, path in ipairs(outcome.files) do seen[path] = true end
+            for _, path in ipairs(text_files) do
+                if not seen[path] then
+                    seen[path] = true
+                    table.insert(outcome.files, path)
+                end
+            end
+        end
+    end
+
+    return outcome
+end
+
 ---Orchestrates context gathering for all commands.
 ---@param command string The command name.
 ---@param args_str string The raw command arguments string.
@@ -294,7 +451,7 @@ function M.handle_context_command(command, args_str, current_bufnr, current_sele
     if is_explicit_cmd then
         raw_input = vim.trim(args_str:sub(#command + 1))
     end
-    local extracted_blocks, query, remaining_prompt = M.parse_input(raw_input, command)
+    local extracted_blocks, query, remaining_prompt, scan_mode = M.parse_input(raw_input, command)
     
     local command_args = remaining_prompt
     local text_selection = current_selection or ""
@@ -361,18 +518,6 @@ function M.handle_context_command(command, args_str, current_bufnr, current_sele
         if not is_explicit_cmd or command == "query" then
             command = "files"
         end
-    elseif command == "scan" then
-        local search_query = query or remaining_prompt
-        if search_query and search_query ~= "" then
-            resolved_files = M.find_files_with_query(search_query, project_root)
-        end
-        -- Fallback to current file if no project matches found or search query is empty
-        if #resolved_files == 0 then
-            local current_file = vim.api.nvim_buf_get_name(current_bufnr)
-            if current_file ~= "" then
-                resolved_files = { current_file }
-            end
-        end
     end
 
     -- 4. Determine if we should inject project context (only if relevant to current project)
@@ -400,6 +545,74 @@ function M.handle_context_command(command, args_str, current_bufnr, current_sele
         end
     end
 
+    -- Scan runs its own pipeline: the structural half searches the project map directly
+    -- and needs no resolved files, so it is handled before the file-driven formatting.
+    if command == "scan" then
+        local search_query = query or remaining_prompt
+        if not search_query or search_query == "" then
+            vim.notify("scan: nothing to search for.", vim.log.levels.WARN, { title = "qLLM" })
+            return nil, "", "", {}
+        end
+
+        local outcome = M.scan_pipeline(search_query, {
+            mode = scan_mode,
+            project_root = project_root,
+            explicit_files = (#extracted_blocks > 0) and resolved_files or nil,
+            current_file = vim.api.nvim_buf_get_name(current_bufnr),
+        })
+
+        if outcome.structural_error and scan_mode == "structural" then
+            vim.notify("scan: " .. outcome.structural_error, vim.log.levels.WARN, { title = "qLLM" })
+        end
+
+        -- No prompt after ' -- ': show the ranked results and stay out of the LLM.
+        if not (query and remaining_prompt ~= "") then
+            local lines = outcome.popup_lines
+            if #lines == 0 then
+                lines = { "No matches found for: " .. search_query }
+            end
+            local Ui = require("qllm.ui")
+            Ui.popup(lines, "markdown", current_bufnr)
+            return nil, "", "", {}
+        end
+
+        if outcome.llm_context == "" then
+            vim.notify("scan: no matches for '" .. search_query .. "'.",
+                vim.log.levels.WARN, { title = "qLLM" })
+            return nil, "", "", {}
+        end
+
+        local display
+        if #extracted_blocks > 0 then
+            display = table.concat(extracted_blocks, ", ")
+        elseif outcome.structural_count > 0 then
+            display = string.format("%d definition(s)", outcome.structural_count)
+        else
+            display = string.format("%d file(s)", #outcome.files)
+        end
+
+        overrides.queue_user_message = "SCAN: " .. search_query .. " -- " .. remaining_prompt
+            .. " in [" .. display .. "]"
+        overrides.queue_metadata.search_results = outcome.llm_context
+        if #outcome.files > 0 then
+            overrides.queue_metadata.files = outcome.files
+        end
+
+        -- The project map is relevant whenever the hits are inside the project, even if
+        -- the buffer the search was launched from is not.
+        local scan_context = system_context
+        if project_map and scan_context == "" then
+            for _, path in ipairs(outcome.files) do
+                if path:sub(1, #project_root) == project_root then
+                    scan_context = "\n[SYSTEM PROJECT CONTEXT]\n" .. project_map .. "\n---\n"
+                    break
+                end
+            end
+        end
+
+        return command, remaining_prompt, scan_context .. outcome.llm_context, overrides
+    end
+
     -- 5. Command-Specific Formatting and Metadata
     local context_files_display = #extracted_blocks > 0 and table.concat(extracted_blocks, ", ")
         or (#resolved_files > 0 and vim.fn.fnamemodify(resolved_files[1], ":t") or "")
@@ -414,30 +627,6 @@ function M.handle_context_command(command, args_str, current_bufnr, current_sele
             end
             -- Append original text_selection (if any remains) to the file context (omitting system_context / qLLM.md)
             text_selection = context_text .. ((text_selection ~= "") and ("\n[USER SELECTION]\n" .. text_selection) or "")
-        elseif command == "scan" then
-            -- 1. Determine the search query (prioritize <query> brackets)
-            local search_query = query or remaining_prompt
-
-            if search_query and search_query ~= "" then
-                local context_text = M.scan_search(resolved_files, search_query)
-
-                -- 2. Determine prompt behavior
-                if query and remaining_prompt ~= "" then
-                    -- Both <query> and a prompt provided: Send to LLM
-                    text_selection = system_context .. context_text
-                    overrides.queue_user_message = "SCAN: " .. search_query .. " -- " .. remaining_prompt .. " in [" .. context_files_display .. "]"
-                    overrides.queue_metadata.search_results = context_text
-                else
-                    -- No prompt provided: Just display results in a popup, bypass LLM.
-                    local Ui = require("qllm.ui")
-                    local Utils = require("qllm.utils")
-                    local lines = Utils.parse_lines(context_text)
-                    if #lines == 0 then table.insert(lines, "No matches found for: " .. search_query) end
-                    
-                    Ui.popup(lines, "markdown", current_bufnr)
-                    return nil, "", "", {}
-                end
-            end
         else
             -- For other commands (e.g. :Que [A.lua] explain), just inject the files as context
             local context_text = M.format_files_as_context(resolved_files)

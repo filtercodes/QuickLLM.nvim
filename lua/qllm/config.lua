@@ -51,15 +51,14 @@ local function is_preset_defined(i)
         or vim.g["qllm_search_model" .. i] ~= nil
 end
 
-for i = 1, 9 do
-    if is_preset_defined(i) then
-        local search_key = "qllm_search_provider" .. i
-        local defaults_key = "qllm_commands_defaults" .. i
-
-        vim.g[search_key] = vim.g[search_key] or "gemini"
-        vim.g[defaults_key] = vim.g[defaults_key] or nil
+vim.schedule(function()
+    for i = 1, 9 do
+        if is_preset_defined(i) then
+            local search_key = "qllm_search_provider" .. i
+            vim.g[search_key] = vim.g[search_key] or "gemini"
+        end
     end
-end
+end)
 
 -- Clears visual selection after completion
 vim.g.qllm_clear_visual_selection = true
@@ -160,6 +159,19 @@ local kb_defaults = {
 
     -- 5. ORCHESTRATION
     scan_context = vim.g.qllm_scan_context or 3,
+    scan_index_variables = true, -- Index module-level variables in the project map
+    scan_use_ctags = true,       -- Use Universal Ctags (if installed) to cover languages
+                                 -- with no Tree-sitter parser available
+
+    -- Structural scan (searches qLLM_map.json and ranks by call-graph centrality)
+    scan_mode = "hybrid",        -- "hybrid" | "structural" | "text"
+    scan_max_results = 20,       -- Ranked definitions shown in the popup
+    scan_max_defs = 5,           -- Definition bodies sent to the LLM
+    scan_centrality_weight = 1.0, -- How strongly centrality boosts a name match
+    scan_test_penalty = 0.5,     -- Score multiplier for test/mock/fixture paths
+    scan_test_patterns = nil,    -- Override the default test path segments
+    scan_text_budget = 4000,     -- Char cap on text matches when they supplement
+                                 -- structural results (a -t search stays unbounded)
     sync_strategy = "auto",      -- "auto" (background) | "manual"
     neighborhood_size = 5,       -- Number of related files to weave
 }
