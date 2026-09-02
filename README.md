@@ -439,12 +439,12 @@ The alternate buffer default (`vim.fn.bufnr('#')`) covers the most natural case 
 
 You can save and restore conversation queues to share them, backup your work, or resume them later using `export` and `load`:
 
-- **Exporting**: Save the active buffer's chat queue to a JSON file:
+- Exporting: Save the active buffer's chat queue to a JSON file:
   ```vim
   :Que export                 -- saves to qllm_<project>_<date>.json in the current directory
   :Que export my_session.json -- saves to the specified file path
   ```
-- **Loading**: Load any file, visual selection, or exported queue:
+- Loading: Load any file, visual selection, or exported queue:
   ```vim
   :Que load my_session.json   -- detects the exported queue format and restores or merges it
   :Que load rules.md          -- treats as a normal text file and loads its contents as context
@@ -456,24 +456,30 @@ If you load a text file or visual selection, it is appended to the chat queue as
 
 To inspect structured data and load specific keys or values into the LLM context use `:Que json`:
 
-- **Opening**: Open the explorer on a JSON file:
+- Opening: Open the explorer on a JSON file:
   ```vim
   :Que json                  -- opens the current active buffer if it has a .json extension
   :Que json config.json      -- opens the specified JSON file
   :Que json config.json database.credentials.1.user -- opens directly at a nested path
+  :Que json "search query"   -- opens active buffer and searches for matches
+  :Que json config.json "search query" -- opens file and searches for matches
   ```
-- **Navigation Controls**:
+- Navigation Controls:
   - Press `<CR>` (Enter) on any line matching `▶ [key]` to go into it.
   - Press `<CR>` on `◀ [..]` or press `<BS>` (Backspace) anywhere to go back up to the parent directory.
   - Press `c` to jump forward to the next expandable child node (lines starting with `▶ ` or `◀ `), and `C` to jump backward to the previous child.
   - Press `u` to undo the last navigation action (pressing it again acts as a redo).
-- **Index Pagination (Folding Point Traversal)**:
+- Index Pagination (Folding Point Traversal):
   - If the path you are exploring contains a numeric array/object index (e.g. `users.1.name`), the first numeric coordinate (scanning left-to-right) acts as the active folding point.
   - While inside the JSON explorer popup, you can press `f` (forward) or `d` (backward) to automatically increment or decrement that index and page through different records (e.g., transitions to `users.2.name`, `users.3.name`) while preserving your deep nested position!
-  - **Multiple / Nested Indices**: If you have multiple nested indices (e.g. `departments.2.employees.5.salary`), the leftmost index (`2`) is active by default. You can change the active folding point at any time by moving your cursor to the `Path:` line at the top of the buffer (line 2) and pressing `<CR>` (Enter) on any other number in the path (e.g., `5`). The active folding point is highlighted in the path string. To reset back to the default leftmost index, press `<CR>` on `root` or the prefix.
-  - **State Retention**: The explorer caches your path position and active folding point for each JSON file. If you exit the popup and reopen the explorer for the same file (without specifying sub-path arguments), it will restore previous position and active folding index. This cache is saved in-memory and resets when Neovim is closed.
-- **Context Injection**:
+  - Multiple / Nested Indices: If you have multiple nested indices (e.g. `departments.2.employees.5.salary`), the leftmost index (`2`) is active by default. You can change the active folding point at any time by moving your cursor to the `Path:` line at the top of the buffer (line 2) and pressing `<CR>` (Enter) on any other number in the path (e.g., `5`). The active folding point is highlighted in the path string. To reset back to the default leftmost index, press `<CR>` on `root` or the prefix.
+  - State Retention: The explorer caches your path position and active folding point for each JSON file. If you exit the popup and reopen the explorer for the same file (without specifying sub-path arguments), it will restore previous position and active folding index. This cache is saved in-memory and resets when Neovim is closed.
+- Context Injection:
   - Since the explorer is a standard buffer, you can visually select any keys or values displayed and run `:'<,'>Que load` to dump them into the active conversation queue.
+- Search:
+  - You can search keys and values across the JSON structure either by passing a quoted search query on launch (`:Que json "search query"`) or by pressing `<c-s>` inside any open JSON explorer popup to open a search prompt.
+  - While search mode is active, `f` (forward) and `d` (backward) cycle through all matching nodes across the JSON tree, navigating to the parent path.
+  - Pressing `<Esc>` exits search mode and returns to normal folding navigation in-place. The explorer remembers the last search query and position per file.
 
 ## Popup options
 
@@ -504,6 +510,7 @@ vim.g.qllm_ui_commands = {
   quit = "q", -- key to quit the popup
   use_as_output = "<c-o>", -- key to use the popup content as output and replace the original lines
   use_as_input = "<c-i>", -- key to use the popup content as input for a new API request
+  search = "<c-s>", -- Popup traversal search
 }
 
 vim.g.qllm_ui_custom_commands = {

@@ -32,7 +32,7 @@ local command_descriptions = {
     list = "Lists all buffers with active chat queue in a popup table.",
     export = "Exports the current buffer's active conversation queue to a JSON file. Usage: `:Que export [filepath]`.",
     load = "Loads a text file as context or restores/merges a previously exported JSON session. Usage: `:Que load [filepath]`.",
-    json = "Launches the interactive JSON explorer. Inside the popup, use `f` and `d` to cycle indexes.",
+    json = "Launches the interactive JSON explorer. Usage: `:Que json [filepath] [initial.path] [\"query\"]`. Inside popup: `<c-s>` (or configured search key) to search, `f`/`d` to traverse matches or fold indices, `<CR>` to drill/set fold, `<BS>` to go back, `<Esc>` to exit search mode.",
     listmodels = "Displays all configured models, providers, presets, and search defaults in a markdown popup.",
 }
 
@@ -52,6 +52,9 @@ function M.get_help_lines()
     table.insert(lines, "- `" .. ui_cmds.quit .. "`: Quit window")
     table.insert(lines, "- `" .. ui_cmds.use_as_output .. "`: Use as output (replace original selection with response)")
     table.insert(lines, "- `" .. ui_cmds.use_as_input .. "`: Use as input (select response and start new chat)")
+    if ui_cmds.search then
+        table.insert(lines, "- `" .. ui_cmds.search .. "`: Search / filter in interactive popups")
+    end
     
     table.insert(lines, "")
     table.insert(lines, "## Commands")

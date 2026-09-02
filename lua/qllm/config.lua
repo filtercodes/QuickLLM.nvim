@@ -306,6 +306,7 @@ vim.g.qllm_ui_commands = {
     quit = "q",
     use_as_output = "<c-o>",
     use_as_input = "<c-i>",
+    search = "<c-s>",
 }
 
 -- Does the popup close when clicking outside the windod

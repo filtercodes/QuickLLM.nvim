@@ -509,19 +509,53 @@ end
 
     -- Handle `json` as a special case
     if command == "json" then
-        local filepath = opts.fargs[2]
-        if not filepath then
-            local cur_file = vim.api.nvim_buf_get_name(0)
+        local raw_args = opts.args or ""
+        -- Check if raw_args contains a quoted search query: "query" or 'query'
+        local search_query = raw_args:match('"(.-)"') or raw_args:match("'(.-)'")
+
+        local cur_file = vim.api.nvim_buf_get_name(0)
+        local filepath = nil
+        local initial_path_str = nil
+
+        local arg2 = opts.fargs[2]
+        local arg3 = opts.fargs[3]
+        local arg4 = opts.fargs[4]
+
+        -- Check if arg2 is a quoted search query or a non-file query for the active .json buffer
+        local arg2_unquoted = arg2 and (arg2:match('^"(.*)"$') or arg2:match("^'(.*)'$"))
+        local is_arg2_file = arg2 and (vim.fn.filereadable(vim.fn.expand(arg2)) == 1 or arg2:match("%.json$"))
+
+        if not arg2 then
+            -- :Que json
             if cur_file:match("%.json$") then
                 filepath = cur_file
             else
-                vim.notify("Usage: :Que json <filepath> [initial.path]", vim.log.levels.ERROR, { title = "qLLM" })
+                vim.notify("Usage: :Que json <filepath> [initial.path] [\"search query\"]", vim.log.levels.ERROR, { title = "qLLM" })
                 return
+            end
+        elseif arg2_unquoted or (not is_arg2_file and cur_file:match("%.json$")) then
+            -- :Que json "query" (applied to active .json buffer)
+            filepath = cur_file
+            search_query = search_query or arg2_unquoted or arg2
+        else
+            -- arg2 is the filepath
+            filepath = arg2
+            -- Check if arg3 is an initial path or a search query
+            if arg3 then
+                local arg3_unquoted = arg3:match('^"(.*)"$') or arg3:match("^'(.*)'$")
+                if arg3_unquoted then
+                    search_query = search_query or arg3_unquoted
+                else
+                    initial_path_str = arg3
+                    if arg4 then
+                        local arg4_unquoted = arg4:match('^"(.*)"$') or arg4:match("^'(.*)'$")
+                        search_query = search_query or arg4_unquoted or arg4
+                    end
+                end
             end
         end
 
         local initial_path = {}
-        local initial_path_str = opts.fargs[3]
         if initial_path_str then
             for part in string.gmatch(initial_path_str, "[^.]+") do
                 local num = tonumber(part)
@@ -534,7 +568,7 @@ end
         end
 
         local JsonExplore = require("qllm.json_explore")
-        JsonExplore.start_explorer(filepath, initial_path, bufnr)
+        JsonExplore.start_explorer(filepath, initial_path, bufnr, search_query)
         return
     end
 

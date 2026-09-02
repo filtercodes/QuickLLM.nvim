@@ -34,15 +34,28 @@ local function show_transient_warning(msg)
     vim.api.nvim_echo({{ msg, "WarningMsg" }}, false, {})
 end
 
-local function save_path_state(filepath, path, active_fold_idx)
+local function save_path_state(filepath, path, active_fold_idx, search_query, search_results, search_index)
     if filepath == "" then return end
     if not M.saved_paths[filepath] then
         M.saved_paths[filepath] = {
             cursor_positions = {}
         }
     end
-    M.saved_paths[filepath].path = path
-    M.saved_paths[filepath].active_fold_idx = active_fold_idx
+    if path ~= nil then
+        M.saved_paths[filepath].path = path
+    end
+    if active_fold_idx ~= nil then
+        M.saved_paths[filepath].active_fold_idx = active_fold_idx
+    end
+    if search_query ~= nil then
+        M.saved_paths[filepath].search_query = search_query
+    end
+    if search_results ~= nil then
+        M.saved_paths[filepath].search_results = search_results
+    end
+    if search_index ~= nil then
+        M.saved_paths[filepath].search_index = search_index
+    end
 end
 
 local function save_current_cursor(bufnr)
@@ -57,10 +70,138 @@ local function save_current_cursor(bufnr)
     M.saved_paths[filepath].cursor_positions[path_key] = cursor
 end
 
+---Recursively searches a decoded JSON structure for keys and values matching query.
+---@param data any The JSON object/array/value.
+---@param query string The search query (case-insensitive substring).
+---@return table results Array of match objects: { parent_path = table, target_key = any, val = any, match_type = string }
+local function execute_search(data, query)
+    local results = {}
+    if not query or query == "" or data == nil then
+        return results
+    end
+
+    local query_lower = string.lower(query)
+
+    local function traverse(node, current_path)
+        if type(node) == "table" then
+            -- Check if it's an array or object
+            local is_array = true
+            local max_idx = 0
+            local keys = {}
+            for k in pairs(node) do
+                if type(k) == "number" then
+                    if k > max_idx then max_idx = k end
+                else
+                    is_array = false
+                end
+                table.insert(keys, k)
+            end
+
+            if is_array and #keys > 0 then
+                for i = 1, max_idx do
+                    local val = node[i]
+                    local new_path = {}
+                    for _, p in ipairs(current_path) do table.insert(new_path, p) end
+                    table.insert(new_path, i)
+
+                    if type(val) == "table" then
+                        traverse(val, new_path)
+                    else
+                        local val_str = string.lower(tostring(val))
+                        if string.find(val_str, query_lower, 1, true) then
+                            table.insert(results, {
+                                parent_path = current_path,
+                                target_key = i,
+                                val = val,
+                                match_type = "value",
+                            })
+                        end
+                    end
+                end
+            else
+                -- Sort keys for deterministic search ordering
+                table.sort(keys, function(a, b)
+                    return tostring(a) < tostring(b)
+                end)
+                for _, k in ipairs(keys) do
+                    local val = node[k]
+                    local k_str = tostring(k)
+                    local new_path = {}
+                    for _, p in ipairs(current_path) do table.insert(new_path, p) end
+                    table.insert(new_path, k)
+
+                    local key_matched = false
+                    -- Match key name
+                    if string.find(string.lower(k_str), query_lower, 1, true) then
+                        key_matched = true
+                        table.insert(results, {
+                            parent_path = current_path,
+                            target_key = k,
+                            val = val,
+                            match_type = "key",
+                        })
+                    end
+
+                    if type(val) == "table" then
+                        traverse(val, new_path)
+                    else
+                        -- Match primitive value
+                        local val_str = string.lower(tostring(val))
+                        if string.find(val_str, query_lower, 1, true) then
+                            if not key_matched then
+                                table.insert(results, {
+                                    parent_path = current_path,
+                                    target_key = k,
+                                    val = val,
+                                    match_type = "value",
+                                })
+                            end
+                        end
+                    end
+                end
+            end
+        else
+            -- Root primitive value
+            local val_str = string.lower(tostring(node))
+            if string.find(val_str, query_lower, 1, true) then
+                table.insert(results, {
+                    parent_path = {},
+                    target_key = nil,
+                    val = node,
+                    match_type = "value",
+                })
+            end
+        end
+    end
+
+    traverse(data, {})
+    return results
+end
+
 local function restore_cursor(bufnr)
     local filepath = vim.b[bufnr].json_file or ""
     local path = vim.b[bufnr].json_path or {}
     local line_count = vim.api.nvim_buf_line_count(bufnr)
+
+    -- 0. Check if search mode is active and snap cursor to the target matched key/leaf
+    if vim.b[bufnr].json_search_mode then
+        local results = vim.b[bufnr].json_search_results or {}
+        local idx = vim.b[bufnr].json_search_index or 1
+        local match = results[idx]
+        if match and match.target_key ~= nil then
+            local key_str = tostring(match.target_key)
+            local target_prefix_1 = "▶ [" .. key_str .. "]"
+            local target_prefix_2 = "  [" .. key_str .. "]"
+            for line_idx = 1, line_count do
+                local line_content = vim.api.nvim_buf_get_lines(bufnr, line_idx - 1, line_idx, false)[1] or ""
+                if string.find(line_content, target_prefix_1, 1, true) == 1 or
+                   string.find(line_content, target_prefix_2, 1, true) == 1 then
+                    pcall(vim.api.nvim_win_set_cursor, 0, { line_idx, 0 })
+                    return
+                end
+            end
+        end
+    end
 
     -- 1. Check if returning from a sub-path and focus the child key we came from
     local old_path = vim.b[bufnr].json_old_path
@@ -157,7 +298,16 @@ function M.render(bufnr)
     local t2 = vim.loop.hrtime()
 
     local lines = {}
-    table.insert(lines, "# JSON Explorer: " .. vim.fn.fnamemodify(filepath, ":t"))
+    local is_search = vim.b[bufnr].json_search_mode == true
+    local search_query = vim.b[bufnr].json_search_query or ""
+    local search_results = vim.b[bufnr].json_search_results or {}
+    local search_idx = vim.b[bufnr].json_search_index or 1
+
+    local header_title = "# JSON Explorer: " .. vim.fn.fnamemodify(filepath, ":t")
+    if is_search and search_query ~= "" then
+        header_title = string.format("%s [SEARCH: %q (%d/%d)]", header_title, search_query, (#search_results > 0 and search_idx or 0), #search_results)
+    end
+    table.insert(lines, header_title)
     
     if #path > 0 then
         table.insert(lines, "Path: `root." .. table.concat(path, ".") .. "`")
@@ -568,7 +718,117 @@ function M.undo_navigation(bufnr)
     M.render(bufnr)
 end
 
-function M.start_explorer(filepath, initial_path, bufnr)
+---Exits search mode on the given buffer and returns to normal navigation mode.
+---@param bufnr number The UI buffer number.
+function M.exit_search(bufnr)
+    if vim.b[bufnr].json_search_mode then
+        vim.b[bufnr].json_search_mode = false
+        vim.notify("json_explore: Exited search mode.", vim.log.levels.INFO, { title = "qLLM" })
+        M.render(bufnr)
+    end
+end
+
+---Iterates forward or backward through search results.
+---@param bufnr number The UI buffer number.
+---@param direction string "forward" or "backward".
+function M.navigate_search(bufnr, direction)
+    save_current_cursor(bufnr)
+    local results = vim.b[bufnr].json_search_results or {}
+    if #results == 0 then
+        show_transient_warning("json_explore: No search results found.")
+        return
+    end
+
+    local count = vim.v.count > 0 and vim.v.count or 1
+    local cur_idx = vim.b[bufnr].json_search_index or 1
+    local total = #results
+
+    local next_idx
+    if direction == "forward" then
+        next_idx = ((cur_idx - 1 + count) % total) + 1
+    else
+        next_idx = ((cur_idx - 1 - count) % total)
+        if next_idx < 0 then next_idx = next_idx + total end
+        next_idx = next_idx + 1
+    end
+
+    vim.b[bufnr].json_search_index = next_idx
+    local match = results[next_idx]
+
+    -- Save state
+    local filepath = vim.b[bufnr].json_file or ""
+    if filepath ~= "" and M.saved_paths[filepath] then
+        M.saved_paths[filepath].search_index = next_idx
+    end
+
+    -- Update path to match's parent path
+    local target_path = {}
+    for i, v in ipairs(match.parent_path) do
+        target_path[i] = v
+    end
+    vim.b[bufnr].json_path = target_path
+
+    M.render(bufnr)
+end
+
+---Opens interactive search input for the JSON explorer buffer.
+---@param bufnr number The UI buffer number.
+function M.prompt_search(bufnr)
+    local current_query = vim.b[bufnr].json_search_query or ""
+    vim.ui.input({ prompt = "JSON Search: ", default = current_query }, function(input)
+        if input == nil then
+            -- User pressed Esc / cancelled prompt
+            return
+        end
+
+        local query = vim.trim(input)
+        if query == "" then
+            -- Empty input: exit search mode and return to normal mode
+            M.exit_search(bufnr)
+            return
+        end
+
+        local data = json_cache[bufnr]
+        local results = execute_search(data, query)
+
+        if #results == 0 then
+            show_transient_warning(string.format("json_explore: No matches for %q", query))
+            return
+        end
+
+        local filepath = vim.b[bufnr].json_file or ""
+        local search_idx = 1
+        -- Check if it's the same query as saved, resume index
+        if filepath ~= "" and M.saved_paths[filepath] and M.saved_paths[filepath].search_query == query then
+            search_idx = math.min(M.saved_paths[filepath].search_index or 1, #results)
+        end
+
+        vim.b[bufnr].json_search_mode = true
+        vim.b[bufnr].json_search_query = query
+        vim.b[bufnr].json_search_results = results
+        vim.b[bufnr].json_search_index = search_idx
+
+        if filepath ~= "" then
+            if not M.saved_paths[filepath] then
+                M.saved_paths[filepath] = { cursor_positions = {} }
+            end
+            M.saved_paths[filepath].search_query = query
+            M.saved_paths[filepath].search_results = results
+            M.saved_paths[filepath].search_index = search_idx
+        end
+
+        local match = results[search_idx]
+        local target_path = {}
+        for i, v in ipairs(match.parent_path) do
+            target_path[i] = v
+        end
+        vim.b[bufnr].json_path = target_path
+
+        M.render(bufnr)
+    end)
+end
+
+function M.start_explorer(filepath, initial_path, bufnr, search_query)
     local expanded = vim.fn.expand(filepath)
     if vim.fn.filereadable(expanded) ~= 1 then
         vim.notify("json_explore: File not found or unreadable: " .. filepath, vim.log.levels.ERROR, { title = "qLLM" })
@@ -605,10 +865,40 @@ function M.start_explorer(filepath, initial_path, bufnr)
         use_fold_idx = saved.active_fold_idx
     end
 
+    -- Setup search state if search_query passed
+    local is_search = false
+    local search_results = {}
+    local search_idx = 1
+
+    if search_query and search_query ~= "" then
+        search_results = execute_search(decoded, search_query)
+        if #search_results > 0 then
+            is_search = true
+            -- Check if same query was saved to resume index
+            if saved and saved.search_query == search_query then
+                search_idx = math.min(saved.search_index or 1, #search_results)
+            else
+                search_idx = 1
+            end
+            use_path = search_results[search_idx].parent_path
+            if saved then
+                saved.search_query = search_query
+                saved.search_results = search_results
+                saved.search_index = search_idx
+            end
+        else
+            vim.notify(string.format("json_explore: No matches for %q", search_query), vim.log.levels.WARN, { title = "qLLM" })
+        end
+    end
+
     vim.b[ui_bufnr].json_path = use_path
     vim.b[ui_bufnr].json_initial_path_len = #(initial_path or {})
     vim.b[ui_bufnr].json_file = expanded
     vim.b[ui_bufnr].json_active_fold_idx = use_fold_idx
+    vim.b[ui_bufnr].json_search_mode = is_search
+    vim.b[ui_bufnr].json_search_query = search_query or (saved and saved.search_query) or ""
+    vim.b[ui_bufnr].json_search_results = is_search and search_results or (saved and saved.search_results) or {}
+    vim.b[ui_bufnr].json_search_index = is_search and search_idx or (saved and saved.search_index) or 1
     vim.b[ui_bufnr].qllm_metadata = { command = "json_explore" }
 
     -- Map Enter key in this buffer to handle navigation
@@ -636,13 +926,44 @@ function M.start_explorer(filepath, initial_path, bufnr)
         end
     end, { buffer = ui_bufnr, silent = true })
 
-    -- Map f to go forward, d to go backward in numeric folding points
+    -- Map search trigger key (default: <c-s>)
+    local search_key = (vim.g.qllm_ui_commands and vim.g.qllm_ui_commands.search) or "<c-s>"
+    vim.keymap.set("n", search_key, function()
+        M.prompt_search(ui_bufnr)
+    end, { buffer = ui_bufnr, silent = true })
+
+    -- Map <Esc> to exit search mode if active, otherwise handle double-esc quit
+    local last_esc_time = 0
+    vim.keymap.set("n", "<Esc>", function()
+        if vim.b[ui_bufnr].json_search_mode then
+            M.exit_search(ui_bufnr)
+        else
+            if vim.g.qllm_quit_with_double_esc then
+                local now = vim.loop.now()
+                if now - last_esc_time < 500 then
+                    ui_elem:unmount()
+                else
+                    last_esc_time = now
+                end
+            end
+        end
+    end, { buffer = ui_bufnr, silent = true })
+
+    -- Map f to go forward, d to go backward in search results or numeric folding points
     vim.keymap.set("n", "f", function()
-        M.navigate(ui_bufnr, "forward")
+        if vim.b[ui_bufnr].json_search_mode then
+            M.navigate_search(ui_bufnr, "forward")
+        else
+            M.navigate(ui_bufnr, "forward")
+        end
     end, { buffer = ui_bufnr, silent = true })
 
     vim.keymap.set("n", "d", function()
-        M.navigate(ui_bufnr, "backward")
+        if vim.b[ui_bufnr].json_search_mode then
+            M.navigate_search(ui_bufnr, "backward")
+        else
+            M.navigate(ui_bufnr, "backward")
+        end
     end, { buffer = ui_bufnr, silent = true })
 
     -- Map c to jump to next expandable child, C to jump to previous
