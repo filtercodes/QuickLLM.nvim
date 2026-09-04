@@ -260,6 +260,54 @@ function M.get_last_response(bufnr, offset)
     return nil, nil, nil, nil, nil
 end
 
+---Searches the conversation queue for exchanges containing query string.
+---@param bufnr number The owner buffer number.
+---@param query string The search query.
+---@param show_question boolean? Whether to prioritize/search user questions.
+---@return table match_offsets List of recall offset indices (1-indexed from newest to oldest) that match the query.
+function M.search_queue(bufnr, query, show_question)
+    local buf_queue = queue[bufnr]
+    if not buf_queue or #buf_queue == 0 or not query or query == "" then
+        return {}
+    end
+
+    local query_lower = string.lower(query)
+    local matches = {}
+    local count = 0
+
+    for i = #buf_queue, 1, -1 do
+        if buf_queue[i].role == "assistant" then
+            count = count + 1
+            local assistant_content = string.lower(buf_queue[i].content or "")
+            local question_content = ""
+            if i > 1 and buf_queue[i - 1].role == "user" then
+                question_content = string.lower(buf_queue[i - 1].content or "")
+            end
+
+            local matched = false
+            if show_question then
+                if string.find(question_content, query_lower, 1, true) then
+                    matched = true
+                elseif string.find(assistant_content, query_lower, 1, true) then
+                    matched = true
+                end
+            else
+                if string.find(assistant_content, query_lower, 1, true) then
+                    matched = true
+                elseif string.find(question_content, query_lower, 1, true) then
+                    matched = true
+                end
+            end
+
+            if matched then
+                table.insert(matches, count)
+            end
+        end
+    end
+
+    return matches
+end
+
 ---Updates the cursor position for a specific assistant response in queue.
 ---@param bufnr number
 ---@param offset number

@@ -380,34 +380,26 @@ function Ui.window_mapping(ui_elem)
         vim.api.nvim_feedkeys("ggVG:Que ", "n", false)
     end, { noremap = false })
 
-    -- Setup buffer-local queue traversal for [ and ] if it is a recall/recallq popup
+    -- Setup buffer-local queue traversal and search if it is a recall/recallq popup
     if vim.b[ui_elem.bufnr].qllm_recall_index ~= nil then
-        local function traverse_recall(direction)
+        local function render_exchange_at_index(target_index, match_info)
             -- Save current cursor position back to queue before switching index
             Ui.save_cursor_pos_for_buf(ui_elem.bufnr)
 
-            local cur_index = vim.b[ui_elem.bufnr].qllm_recall_index or 1
-            local next_index = cur_index
-            if direction == "forward" then
-                next_index = math.max(1, cur_index - 1)
-            else
-                next_index = cur_index + 1
-            end
-
             local owner_buf = ui_to_owner_map[ui_elem.bufnr]
-            if not owner_buf or not vim.api.nvim_buf_is_valid(owner_buf) then return end
+            if not owner_buf or not vim.api.nvim_buf_is_valid(owner_buf) then return false end
 
             local Queue = require("qllm.queue")
             local Utils = require("qllm.utils")
-            local last_response, model, cmd, cursor_pos, question = Queue.get_last_response(owner_buf, next_index)
+            local last_response, model, cmd, cursor_pos, question = Queue.get_last_response(owner_buf, target_index)
 
             local show_question = vim.b[ui_elem.bufnr].qllm_show_question
             local display_text = show_question and question or last_response
 
             if display_text then
-                vim.b[ui_elem.bufnr].qllm_recall_index = next_index
+                vim.b[ui_elem.bufnr].qllm_recall_index = target_index
                 vim.b[ui_elem.bufnr].qllm_metadata = { model = model, command = cmd }
-                vim.b[owner_buf].qllm_recall_index = next_index
+                vim.b[owner_buf].qllm_recall_index = target_index
                 vim.b[owner_buf].qllm_metadata = { model = model, command = cmd }
 
                 -- Update popup content in-place
@@ -422,10 +414,86 @@ function Ui.window_mapping(ui_elem)
                         pcall(vim.api.nvim_win_set_cursor, winid, cursor_pos)
                     end
                 end
+
+                if match_info then
+                    vim.notify(string.format("Queue Search [%s]: match %d of %d (history %d)", match_info.query, match_info.idx, match_info.total, target_index), vim.log.levels.INFO, { title = "qLLM" })
+                end
+                return true
             else
                 local msg = show_question and "question" or "response"
-                vim.notify(string.format("No %s found at recall index %d.", msg, next_index), vim.log.levels.WARN, { title = "qLLM" })
+                vim.notify(string.format("No %s found at recall index %d.", msg, target_index), vim.log.levels.WARN, { title = "qLLM" })
+                return false
             end
+        end
+
+        local function traverse_recall(direction)
+            if vim.b[ui_elem.bufnr].qllm_queue_search_mode then
+                local results = vim.b[ui_elem.bufnr].qllm_queue_search_results or {}
+                if #results == 0 then
+                    vim.notify("No queue search matches.", vim.log.levels.WARN, { title = "qLLM" })
+                    return
+                end
+
+                local cur_match_idx = vim.b[ui_elem.bufnr].qllm_queue_search_idx or 1
+                local total = #results
+                local next_match_idx
+                if direction == "forward" then
+                    -- 'forward' in recall moves towards newer responses (lower offset), so match index goes down
+                    next_match_idx = ((cur_match_idx - 2 + total) % total) + 1
+                else
+                    -- 'backward' in recall moves towards older responses (higher offset), so match index goes up
+                    next_match_idx = (cur_match_idx % total) + 1
+                end
+
+                vim.b[ui_elem.bufnr].qllm_queue_search_idx = next_match_idx
+                local target_index = results[next_match_idx]
+                local query = vim.b[ui_elem.bufnr].qllm_queue_search_query or ""
+                render_exchange_at_index(target_index, { query = query, idx = next_match_idx, total = total })
+            else
+                local cur_index = vim.b[ui_elem.bufnr].qllm_recall_index or 1
+                local next_index = (direction == "forward") and math.max(1, cur_index - 1) or (cur_index + 1)
+                render_exchange_at_index(next_index)
+            end
+        end
+
+        local function prompt_queue_search()
+            local owner_buf = ui_to_owner_map[ui_elem.bufnr]
+            if not owner_buf or not vim.api.nvim_buf_is_valid(owner_buf) then return end
+
+            local current_query = vim.b[ui_elem.bufnr].qllm_queue_search_query or ""
+            vim.ui.input({ prompt = "Queue Search: ", default = current_query }, function(input)
+                if input == nil then
+                    -- User cancelled with Esc
+                    return
+                end
+
+                local query = vim.trim(input)
+                if query == "" then
+                    -- Empty string exits search mode
+                    if vim.b[ui_elem.bufnr].qllm_queue_search_mode then
+                        vim.b[ui_elem.bufnr].qllm_queue_search_mode = false
+                        vim.notify("Exited queue search mode.", vim.log.levels.INFO, { title = "qLLM" })
+                    end
+                    return
+                end
+
+                local Queue = require("qllm.queue")
+                local show_question = vim.b[ui_elem.bufnr].qllm_show_question
+                local results = Queue.search_queue(owner_buf, query, show_question)
+
+                if #results == 0 then
+                    vim.notify(string.format("No matches in queue for %q", query), vim.log.levels.WARN, { title = "qLLM" })
+                    return
+                end
+
+                vim.b[ui_elem.bufnr].qllm_queue_search_mode = true
+                vim.b[ui_elem.bufnr].qllm_queue_search_query = query
+                vim.b[ui_elem.bufnr].qllm_queue_search_results = results
+                vim.b[ui_elem.bufnr].qllm_queue_search_idx = 1
+
+                local first_match_index = results[1]
+                render_exchange_at_index(first_match_index, { query = query, idx = 1, total = #results })
+            end)
         end
 
         ui_elem:map("n", "f", function()
@@ -434,6 +502,30 @@ function Ui.window_mapping(ui_elem)
 
         ui_elem:map("n", "d", function()
             traverse_recall("backward")
+        end, { noremap = true, silent = true })
+
+        -- Map search key (<c-s>)
+        local search_key = (vim.g.qllm_ui_commands and vim.g.qllm_ui_commands.search) or "<c-s>"
+        ui_elem:map("n", search_key, function()
+            prompt_queue_search()
+        end, { noremap = true, silent = true })
+
+        -- Map <Esc> to exit search mode if active, otherwise handle double-esc quit
+        local last_esc_time = 0
+        ui_elem:map("n", "<esc>", function()
+            if vim.b[ui_elem.bufnr].qllm_queue_search_mode then
+                vim.b[ui_elem.bufnr].qllm_queue_search_mode = false
+                vim.notify("Exited queue search mode.", vim.log.levels.INFO, { title = "qLLM" })
+            else
+                if vim.g.qllm_quit_with_double_esc then
+                    local now = vim.loop.now()
+                    if now - last_esc_time < 500 then
+                        ui_elem:unmount()
+                    else
+                        last_esc_time = now
+                    end
+                end
+            end
         end, { noremap = true, silent = true })
     end
 
